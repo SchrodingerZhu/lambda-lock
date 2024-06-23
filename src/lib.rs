@@ -222,7 +222,7 @@ impl<T> LambdaLock<T> {
                 data: NonNull::new_unchecked(self.data.get()),
             };
 
-            let inner = NonNull::new_unchecked(node.inner.get());
+            let inner = NonNull::from(&node).cast();
             LockNode::attach(inner, &self.inner);
             node.ret.replace(MaybeUninit::uninit()).assume_init()
         }
