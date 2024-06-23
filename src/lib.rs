@@ -237,7 +237,7 @@ impl<T> LambdaLock<T> {
 
             let inner = NonNull::from(&node).cast();
             LockNode::enqueue(inner, &self.inner);
-            node.ret.replace(MaybeUninit::uninit()).assume_init()
+            node.ret.into_inner().assume_init()
         }
     }
 }
