@@ -20,7 +20,29 @@ impl FlagLock {
         }
     }
     #[inline(always)]
-    pub(crate) unsafe fn release(&self) {
+    unsafe fn release(&self) {
         self.0.store(false, Ordering::Release);
+    }
+}
+
+pub(crate) struct FlagLockOwnership<'a>(&'a FlagLock);
+
+impl<'a> FlagLockOwnership<'a> {
+    #[inline(always)]
+    pub(crate) unsafe fn annouce(lock: &'a FlagLock) -> Self {
+        Self(lock)
+    }
+
+    pub(crate) fn handover(self) {
+        core::mem::forget(self);
+    }
+}
+
+impl<'a> Drop for FlagLockOwnership<'a> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        unsafe {
+            self.0.release();
+        }
     }
 }

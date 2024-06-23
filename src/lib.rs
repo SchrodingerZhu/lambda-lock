@@ -1,20 +1,17 @@
 #![no_std]
 mod flag_lock;
+mod futex;
 
 use core::{
     cell::{Cell, UnsafeCell},
     mem::MaybeUninit,
     ptr::NonNull,
-    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
+    sync::atomic::{AtomicPtr, Ordering},
 };
 
-#[cfg(not(miri))]
-use rustix::{
-    io::Errno,
-    thread::{FutexFlags, FutexOperation},
-};
 
-use flag_lock::FlagLock;
+use flag_lock::{FlagLock, FlagLockOwnership};
+use futex::Futex;
 
 const WAITING: u32 = 0b00;
 const DONE: u32 = 0b01;
@@ -22,7 +19,7 @@ const READY: u32 = 0b10;
 const SLEEPING: u32 = 0b11;
 
 struct LockNode {
-    status: AtomicU32,
+    status: Futex,
     next: AtomicPtr<Self>,
     lambda: fn(NonNull<Self>),
 }
@@ -35,53 +32,9 @@ struct RawLambdaLock {
 impl LockNode {
     fn new(lambda: fn(NonNull<Self>)) -> Self {
         Self {
-            status: AtomicU32::new(WAITING),
+            status: Futex::new(WAITING),
             next: AtomicPtr::new(core::ptr::null_mut()),
             lambda,
-        }
-    }
-    unsafe fn wait(this: NonNull<Self>) {
-        #[cfg(not(miri))]
-        {
-            while this.as_ref().status.load(Ordering::Acquire) == SLEEPING {
-                while let Err(Errno::INTR) = rustix::thread::futex(
-                    &this.as_ref().status as *const _ as *mut _,
-                    FutexOperation::Wait,
-                    FutexFlags::PRIVATE,
-                    SLEEPING,
-                    core::ptr::null(),
-                    core::ptr::null_mut(),
-                    0,
-                ) {
-                    core::hint::spin_loop();
-                }
-            }
-        }
-        #[cfg(miri)]
-        {
-            while this.as_ref().status.load(Ordering::Acquire) == SLEEPING {
-                core::hint::spin_loop();
-            }
-        }
-    }
-    unsafe fn notify(this: NonNull<Self>, value: u32) {
-        #[cfg(not(miri))]
-        {
-            if this.as_ref().status.swap(value, Ordering::AcqRel) == SLEEPING {
-                let _ = rustix::thread::futex(
-                    &this.as_ref().status as *const _ as *mut _,
-                    FutexOperation::Wake,
-                    FutexFlags::PRIVATE,
-                    1,
-                    core::ptr::null(),
-                    core::ptr::null_mut(),
-                    0,
-                );
-            }
-        }
-        #[cfg(miri)]
-        {
-            this.as_ref().status.store(value, Ordering::Release);
         }
     }
 
@@ -93,8 +46,8 @@ impl LockNode {
     #[inline(always)]
     unsafe fn enqueue(this: NonNull<Self>, lock: &RawLambdaLock) {
         if lock.head.load(Ordering::Relaxed).is_null() && lock.flag_lock.try_acquire() {
+            let _ownership = FlagLockOwnership::annouce(&lock.flag_lock);
             Self::execute(this);
-            lock.flag_lock.release();
             return;
         }
         Self::enqueue_slow(this, lock);
@@ -121,7 +74,7 @@ impl LockNode {
                     .compare_exchange(WAITING, SLEEPING, Ordering::AcqRel, Ordering::Relaxed)
                     .is_ok()
             {
-                Self::wait(this);
+                this.as_ref().status.wait(SLEEPING);
             }
             if this.as_ref().status.load(Ordering::Acquire) == DONE {
                 return;
@@ -130,12 +83,14 @@ impl LockNode {
             lock.flag_lock.acquire();
         }
 
+        let ownership = FlagLockOwnership::annouce(&lock.flag_lock);
+
         let mut current = this;
         loop {
             Self::execute(current);
             let next = current.as_ref().next.load(Ordering::Acquire);
             if let Some(next) = NonNull::new(next) {
-                Self::notify(current, DONE);
+                current.as_ref().status.notify(DONE, SLEEPING);
                 current = next;
                 continue;
             }
@@ -152,18 +107,19 @@ impl LockNode {
             )
             .is_ok()
         {
-            Self::notify(current, DONE);
-            lock.flag_lock.release();
+            current.as_ref().status.notify(DONE, SLEEPING);
             return;
         }
+
+        ownership.handover();
 
         while current.as_ref().next.load(Ordering::Relaxed).is_null() {
             core::hint::spin_loop();
         }
 
         let next = NonNull::new_unchecked(current.as_ref().next.load(Ordering::Acquire));
-        Self::notify(next, READY);
-        Self::notify(current, DONE);
+        next.as_ref().status.notify(READY, SLEEPING);
+        current.as_ref().status.notify(DONE, SLEEPING);
     }
 }
 
