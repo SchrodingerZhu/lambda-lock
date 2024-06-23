@@ -1,7 +1,7 @@
 #![no_std]
 
 use core::{
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     mem::MaybeUninit,
     ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
@@ -198,7 +198,7 @@ impl<T> LambdaLock<T> {
         #[repr(C)]
         struct Node<T, F, R> {
             inner: UnsafeCell<LockNode>,
-            ret: MaybeUninit<R>,
+            ret: Cell<MaybeUninit<R>>,
             lambda: MaybeUninit<F>,
             data: NonNull<T>,
         }
@@ -207,23 +207,24 @@ impl<T> LambdaLock<T> {
             F: FnOnce(&mut T) -> R,
         {
             unsafe {
-                let mut this = NonNull::cast::<Node<T, F, R>>(this);
-                let lambda = this.as_mut().lambda.assume_init_read();
-                let ret = (lambda)(this.as_mut().data.as_mut());
-                this.as_mut().ret.write(ret);
+                let this = NonNull::cast::<Node<T, F, R>>(this);
+                let lambda = this.as_ref().lambda.assume_init_read();
+                let mut data = this.as_ref().data;
+                let ret = (lambda)(data.as_mut());
+                this.as_ref().ret.set(MaybeUninit::new(ret));
             }
         }
         unsafe {
             let node = Node {
                 inner: UnsafeCell::new(LockNode::new(execute::<T, F, R>)),
-                ret: MaybeUninit::uninit(),
+                ret: Cell::new(MaybeUninit::uninit()),
                 lambda: MaybeUninit::new(lambda),
                 data: NonNull::new_unchecked(self.data.get()),
             };
 
             let inner = NonNull::new_unchecked(node.inner.get());
             LockNode::attach(inner, &self.inner);
-            node.ret.assume_init()
+            node.ret.replace(MaybeUninit::uninit()).assume_init()
         }
     }
 }
