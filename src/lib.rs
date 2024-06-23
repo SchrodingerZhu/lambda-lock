@@ -246,12 +246,12 @@ mod tests {
                 let lock = &lock;
                 scope.spawn(move || {
                     lock.schedule(|data| {
-                        *data += 100 - i;
+                        *data += cnt - i;
                     });
                 });
             }
         });
 
-        assert_eq!(lock.schedule(|x| *x), 5050);
+        assert_eq!(lock.schedule(|x| *x), cnt * (cnt + 1) / 2);
     }
 }
