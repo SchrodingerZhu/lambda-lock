@@ -17,9 +17,11 @@ use rustix::{
 struct FlagLock(AtomicBool);
 
 impl FlagLock {
+    #[inline(always)]
     fn try_acquire(&self) -> bool {
         !self.0.swap(true, Ordering::Acquire)
     }
+    #[inline(always)]
     fn acquire(&self) {
         while self.0.swap(true, Ordering::Acquire) {
             while self.0.load(Ordering::Relaxed) {
@@ -27,6 +29,7 @@ impl FlagLock {
             }
         }
     }
+    #[inline(always)]
     unsafe fn release(&self) {
         self.0.store(false, Ordering::Release);
     }
@@ -100,16 +103,24 @@ impl LockNode {
             this.as_ref().status.store(value, Ordering::Release);
         }
     }
+
+    #[inline(always)]
     unsafe fn execute(this: NonNull<Self>) {
         (this.as_ref().lambda)(this);
     }
-    unsafe fn attach(this: NonNull<Self>, lock: &RawLambdaLock) {
+
+    #[inline(always)]
+    unsafe fn enqueue(this: NonNull<Self>, lock: &RawLambdaLock) {
         if lock.head.load(Ordering::Relaxed).is_null() && lock.flag_lock.try_acquire() {
             Self::execute(this);
             lock.flag_lock.release();
             return;
         }
+        Self::enqueue_slow(this, lock);
+    }
 
+    #[cold]
+    unsafe fn enqueue_slow(this: NonNull<Self>, lock: &RawLambdaLock) {
         let prev = lock.head.swap(this.as_ptr(), Ordering::AcqRel);
 
         if let Some(prev) = NonNull::new(prev) {
@@ -223,7 +234,7 @@ impl<T> LambdaLock<T> {
             };
 
             let inner = NonNull::from(&node).cast();
-            LockNode::attach(inner, &self.inner);
+            LockNode::enqueue(inner, &self.inner);
             node.ret.replace(MaybeUninit::uninit()).assume_init()
         }
     }
