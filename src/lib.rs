@@ -204,7 +204,8 @@ impl<T> LambdaLock<T> {
     }
     pub fn schedule<F, R>(&self, lambda: F) -> R
     where
-        F: FnOnce(&mut T) -> R,
+        F: FnOnce(&mut T) -> R + Send,
+        R: Send,
     {
         #[repr(C)]
         struct Node<T, F, R> {
@@ -215,7 +216,8 @@ impl<T> LambdaLock<T> {
         }
         fn execute<T, F, R>(this: NonNull<LockNode>)
         where
-            F: FnOnce(&mut T) -> R,
+            F: FnOnce(&mut T) -> R + Send,
+            R: Send,
         {
             unsafe {
                 let this = NonNull::cast::<Node<T, F, R>>(this);
