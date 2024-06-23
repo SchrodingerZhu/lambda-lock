@@ -1,6 +1,8 @@
 #![no_std]
 
 use core::{
+    cell::UnsafeCell,
+    mem::MaybeUninit,
     ptr::NonNull,
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
 };
@@ -175,8 +177,10 @@ impl LockNode {
 
 pub struct LambdaLock<T> {
     inner: RawLambdaLock,
-    data: T,
+    data: UnsafeCell<T>,
 }
+
+unsafe impl<T> Sync for LambdaLock<T> {}
 
 impl<T> LambdaLock<T> {
     pub fn new(data: T) -> Self {
@@ -184,6 +188,7 @@ impl<T> LambdaLock<T> {
             head: AtomicPtr::new(core::ptr::null_mut()),
             flag_lock: FlagLock(AtomicBool::new(false)),
         };
+        let data = UnsafeCell::new(data);
         Self { inner, data }
     }
     pub fn schedule<F, R>(&self, lambda: F) -> R
@@ -192,9 +197,9 @@ impl<T> LambdaLock<T> {
     {
         #[repr(C)]
         struct Node<T, F, R> {
-            inner: LockNode,
-            ret: Option<R>,
-            lambda: Option<F>,
+            inner: UnsafeCell<LockNode>,
+            ret: MaybeUninit<R>,
+            lambda: MaybeUninit<F>,
             data: NonNull<T>,
         }
         fn execute<T, F, R>(this: NonNull<LockNode>)
@@ -203,21 +208,22 @@ impl<T> LambdaLock<T> {
         {
             unsafe {
                 let mut this = NonNull::cast::<Node<T, F, R>>(this);
-                let ret =
-                    (this.as_mut().lambda.take().unwrap_unchecked())(this.as_mut().data.as_mut());
-                this.as_mut().ret = Some(ret);
+                let lambda = this.as_mut().lambda.assume_init_read();
+                let ret = (lambda)(this.as_mut().data.as_mut());
+                this.as_mut().ret.write(ret);
             }
         }
-        let node = Node {
-            inner: LockNode::new(execute::<T, F, R>),
-            ret: None,
-            lambda: Some(lambda),
-            data: NonNull::from(&self.data),
-        };
         unsafe {
-            let inner = NonNull::from(&node.inner);
+            let node = Node {
+                inner: UnsafeCell::new(LockNode::new(execute::<T, F, R>)),
+                ret: MaybeUninit::uninit(),
+                lambda: MaybeUninit::new(lambda),
+                data: NonNull::new_unchecked(self.data.get()),
+            };
+
+            let inner = NonNull::new_unchecked(node.inner.get());
             LockNode::attach(inner, &self.inner);
-            node.ret.unwrap_unchecked()
+            node.ret.assume_init()
         }
     }
 }
