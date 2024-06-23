@@ -1,10 +1,11 @@
 #![no_std]
+mod flag_lock;
 
 use core::{
     cell::{Cell, UnsafeCell},
     mem::MaybeUninit,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
 };
 
 #[cfg(not(miri))]
@@ -13,27 +14,7 @@ use rustix::{
     thread::{FutexFlags, FutexOperation},
 };
 
-#[repr(transparent)]
-struct FlagLock(AtomicBool);
-
-impl FlagLock {
-    #[inline(always)]
-    fn try_acquire(&self) -> bool {
-        !self.0.swap(true, Ordering::Acquire)
-    }
-    #[inline(always)]
-    fn acquire(&self) {
-        while self.0.swap(true, Ordering::Acquire) {
-            while self.0.load(Ordering::Relaxed) {
-                core::hint::spin_loop();
-            }
-        }
-    }
-    #[inline(always)]
-    unsafe fn release(&self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
+use flag_lock::FlagLock;
 
 const WAITING: u32 = 0b00;
 const DONE: u32 = 0b01;
@@ -197,7 +178,7 @@ impl<T> LambdaLock<T> {
     pub fn new(data: T) -> Self {
         let inner = RawLambdaLock {
             head: AtomicPtr::new(core::ptr::null_mut()),
-            flag_lock: FlagLock(AtomicBool::new(false)),
+            flag_lock: FlagLock::new(),
         };
         let data = UnsafeCell::new(data);
         Self { inner, data }
