@@ -1,10 +1,5 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use rustix::{
-    io::Errno,
-    thread::{FutexFlags, FutexOperation},
-};
-
 #[repr(transparent)]
 pub(crate) struct Futex(AtomicU32);
 
@@ -28,10 +23,10 @@ impl Futex {
         #[cfg(not(miri))]
         unsafe {
             while self.load(Ordering::Acquire) == value {
-                while let Err(Errno::INTR) = rustix::thread::futex(
+                while let Err(rustix::io::Errno::INTR) = rustix::thread::futex(
                     &self as *const _ as *mut _,
-                    FutexOperation::Wait,
-                    FutexFlags::PRIVATE,
+                    rustix::thread::FutexOperation::Wait,
+                    rustix::thread::FutexFlags::PRIVATE,
                     value,
                     core::ptr::null(),
                     core::ptr::null_mut(),
@@ -56,8 +51,8 @@ impl Futex {
             if self.swap(new_val, Ordering::AcqRel) == old_val {
                 let _ = rustix::thread::futex(
                     &self as *const _ as *mut _,
-                    FutexOperation::Wake,
-                    FutexFlags::PRIVATE,
+                    rustix::thread::FutexOperation::Wake,
+                    rustix::thread::FutexFlags::PRIVATE,
                     1,
                     core::ptr::null(),
                     core::ptr::null_mut(),
