@@ -219,7 +219,7 @@ impl LockNode {
         next.as_ref().status.notify(READY, SLEEPING);
         current.as_ref().status.notify(DONE, SLEEPING);
 
-        return true;
+        true
     }
 }
 
@@ -352,15 +352,18 @@ mod tests {
                 let lock = &lock;
                 let panic_handle = scope.spawn(move || {
                     lock.schedule(|data| {
-                        *data += cnt - i;
                         if i == cnt / 2 {
                             panic!("panic chain");
                         }
+                        *data += cnt - i;
                     })
-                    .unwrap_or_else(|mut e| {
-                        // let miri test race condition
-                        *e.get_mut() = 0;
+                    .unwrap_or_else(|_| {
                         lock.clear_poisoned();
+                        // reschedule the task
+                        lock.schedule(|data| {
+                            *data += cnt - i;
+                        })
+                        .unwrap();
                     });
                 });
                 if i == cnt / 2 {
@@ -369,5 +372,6 @@ mod tests {
             }
             handle.unwrap().join().unwrap_err();
         });
+        assert_eq!(lock.schedule(|x| *x).unwrap(), cnt * cnt / 2);
     }
 }
