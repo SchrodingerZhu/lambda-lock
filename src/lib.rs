@@ -372,6 +372,9 @@ mod tests {
             }
             handle.unwrap().join().unwrap_err();
         });
-        assert_eq!(lock.schedule(|x| *x).unwrap(), cnt * cnt / 2);
+        assert_eq!(
+            lock.schedule(|x| *x).unwrap_or_else(|x| *x.get_ref()),
+            cnt * cnt / 2
+        );
     }
 }
